@@ -1,6 +1,6 @@
 {
   "name": "h-crypto",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "Hybrid encryption for JavaScript/TypeScript — AES + libsodium sealed-box envelope pattern. Browser & Node compatible, key generation, and easy hybrid workflows.",
   "repository": {
     "type": "git",
