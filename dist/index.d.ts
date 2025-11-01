@@ -21,6 +21,13 @@ interface HybridEncryptConfig {
 
 declare const aesEncrypt: (data: Record<string, any>, config: AESConfig) => Promise<string>;
 declare const aesDecrypt: (encrypted: string, config: AESConfig) => Promise<Record<string, any> | null>;
+/**
+ * Check whether a token is expired. Returns:
+ * - true if token is expired
+ * - false if token is valid (not expired)
+ * - null if token could not be decrypted / invalid
+ */
+declare const isTokenExpired: (token: string, config: AESConfig) => Promise<boolean | null>;
 
 declare const generateRSAKeys: (bits?: number) => RSAKeyPair;
 declare const rsaEncrypt: (data: string, publicKey: string) => string;
@@ -31,5 +38,6 @@ declare const hybridDecrypt: (token: string, config: HybridEncryptConfig) => Pro
 
 declare const randomKey: (length?: number) => string;
 declare const randomIV: () => string;
+declare const randomIVHex: (bytes?: number) => string;
 
-export { type AESAlgorithm, type AESConfig, type EncodingType, type HybridEncryptConfig, type RSAAlgorithm, type RSAKeyPair, aesDecrypt, aesEncrypt, generateRSAKeys as generateKeyPair, generateRSAKeys, hybridDecrypt, hybridEncrypt, randomIV, randomKey, rsaDecrypt, rsaEncrypt };
+export { type AESAlgorithm, type AESConfig, type EncodingType, type HybridEncryptConfig, type RSAAlgorithm, type RSAKeyPair, aesDecrypt, aesEncrypt, generateRSAKeys as generateKeyPair, generateRSAKeys, hybridDecrypt, hybridEncrypt, isTokenExpired, randomIV, randomIVHex, randomKey, rsaDecrypt, rsaEncrypt };
