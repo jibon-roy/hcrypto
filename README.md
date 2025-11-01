@@ -1,10 +1,8 @@
 # joycrypto-hybrid
 
-A hybrid AES + RSA encryption library usable from both JavaScript and TypeScript projects. This package ships prebuilt CommonJS and ESM bundles plus TypeScript declarations so it can be consumed by both kinds of projects.
+A hybrid encryption helper focused on providing cross-platform (Node + browser-ready APIs) building blocks for hybrid encryption flows. This project provides AES helpers, sealed-box wrappers (libsodium), key generation utilities, and an easy hybrid envelope pattern.
 
 ## Install
-
-Run in your project root:
 
 ```powershell
 npm install joycrypto-hybrid
@@ -12,188 +10,155 @@ npm install joycrypto-hybrid
 pnpm add joycrypto-hybrid
 ```
 
-## Usage (TypeScript)
+## Quick notes about platform compatibility
 
-```ts
-import { HybridEncryptConfig, AESConfig, RSAKeyPair } from "joycrypto-hybrid";
-import { generateKeyPair } from "joycrypto-hybrid";
+- As of v1.x the package provides browser-safe code paths for symmetric AES operations (Web Crypto + scrypt-js) and uses libsodium-wrappers sealed boxes for cross-platform asymmetric wrapping. This allows the same high-level API to work in browsers (WASM libsodium) and Node.
+- For server-only RSA/PEM flows the old `rsa` helpers remain, but the hybrid encryptor uses the sodium sealed-box helpers by default.
 
-const rsa = generateKeyPair();
-const aes: AESConfig = {
-  secretKey: "0123456789abcdef0123456789abcdef",
-  iv: "0123456789abcdef",
-  salt: "mysalt",
-  algorithm: "aes-256-cbc",
-};
+## Front-end (React / Next client) — client-only example
 
-const config: HybridEncryptConfig = { aes, rsa };
-// use library functions...
-```
+The package includes helpers to generate hex secrets and hex IVs that are easy to copy/paste into front-end code. Below is a minimal client-only React component example (adapted for Next.js client components):
 
-## Usage (JavaScript - CJS)
-
-```js
-const jc = require("joycrypto-hybrid");
-// use jc.* exports
-```
-
-### Usage in an Express.js server
-
-Below is a minimal example showing how to expose simple encrypt/decrypt endpoints using Express. This runs on the server (Node.js) and uses the library's Node crypto-based APIs.
-
-```js
-const express = require("express");
-const bodyParser = require("body-parser");
-const {
-  generateKeyPair,
-  randomKey,
-  randomIV,
-  hybridEncrypt,
-  hybridDecrypt,
-} = require("joycrypto-hybrid");
-
-const app = express();
-app.use(bodyParser.json());
-
-// For demo purposes we generate an RSA pair in memory. In production
-// you'd persist keys or use a secure KMS.
-const rsa = generateKeyPair();
-
-app.post("/encrypt", (req, res) => {
-  const aes = {
-    secretKey: randomKey(32),
-    iv: randomIV(),
-    salt: "mysalt",
-    algorithm: "aes-256-cbc",
-  };
-
-  const token = hybridEncrypt(req.body, { aes, rsa });
-  res.json({ token });
-});
-
-app.post("/decrypt", (req, res) => {
-  const { token } = req.body;
-
-  // When decrypting, hybridDecrypt will recover AES key/iv from the
-  // encryptedKey portion using the private RSA key. Provide a minimal
-  // AES config (algorithm/salt) — secretKey and iv will be merged from
-  // the decrypted key info.
-  const aesPlaceholder = {
-    secretKey: "",
-    iv: "",
-    salt: "mysalt",
-    algorithm: "aes-256-cbc",
-  };
-
-  const data = hybridDecrypt(token, { aes: aesPlaceholder, rsa });
-  res.json({ data });
-});
-
-app.listen(3000, () => console.log("Server listening on :3000"));
-```
-
-### Usage in Next.js (API routes / server-side)
-
-Use this library inside Next.js API routes or other server-side code (Node). Next.js API routes run on the server and can safely use Node's crypto APIs.
-
-```js
-// pages/api/encrypt.js
+```tsx
+import React from "react";
 import {
-  generateKeyPair,
+  aesEncrypt,
+  aesDecrypt,
   randomKey,
-  randomIV,
-  hybridEncrypt,
+  randomIVHex,
 } from "joycrypto-hybrid";
 
-const rsa = generateKeyPair();
+async function demo() {
+  // prefer AES-256
+  const secretHex = randomKey(64); // 64 hex chars -> 32 bytes
+  const ivHex = randomIVHex(16); // 16 bytes -> 32 hex chars
 
-export default function handler(req, res) {
-  if (req.method !== "POST") return res.status(405).end();
-
-  const aes = {
-    secretKey: randomKey(32),
-    iv: randomIV(),
-    salt: "mysalt",
+  const cfg = {
+    secretKey: secretHex,
+    iv: ivHex,
+    salt: "client-salt",
     algorithm: "aes-256-cbc",
+    encoding: "base64",
+    expiresIn: 3600,
   };
 
-  const token = hybridEncrypt(req.body, { aes, rsa });
-  res.status(200).json({ token });
+  const payload = { hello: "world" };
+  const token = await aesEncrypt(payload, cfg);
+  const recovered = await aesDecrypt(token, cfg);
+  console.log({ token, recovered });
+}
+
+demo();
+```
+
+Notes for client-only usage:
+
+- Any secret embedded in client code is visible to end users. Client-only secrets are appropriate only when you want client-side encryption for local storage or user-controlled secrets. Do not use client-only secrets to protect server-only data.
+- IVs and secrets are hex strings: use `randomKey(length)` where length is number of hex characters, and `randomIVHex(bytes)` where bytes is the number of bytes for the IV.
+
+## Server-side (Node, Next.js API routes, Express)
+
+Server code can keep private keys and secrets hidden. Here's a minimal Next.js API route example that decrypts a token sent from a client. It assumes you already created/stored a sodium keypair (or RSA pair if you prefer):
+
+```js
+// pages/api/decrypt-token.js (Next.js API route)
+import { hybridDecrypt } from "joycrypto-hybrid";
+
+// Keep keys in a secure store in production. For demo we use process.env or in-memory.
+const KEYPAIR = {
+  publicKey: process.env.SODIUM_PUBLIC,
+  privateKey: process.env.SODIUM_PRIVATE,
+};
+
+export default async function handler(req, res) {
+  if (req.method !== "POST") return res.status(405).end();
+  const { token } = req.body;
+  if (!token) return res.status(400).json({ error: "token required" });
+
+  const cfg = {
+    aes: { algorithm: "aes-256-cbc", salt: "client-salt" },
+    rsa: { publicKey: KEYPAIR.publicKey, privateKey: KEYPAIR.privateKey },
+  };
+
+  const data = await hybridDecrypt(token, cfg);
+  if (!data) return res.status(400).json({ error: "decrypt failed" });
+  return res.status(200).json({ data });
 }
 ```
 
-### Using from a plain JavaScript (CommonJS) project
-
-The package ships CJS and ESM bundles. In a plain Node.js project using CommonJS you can require and call the functions directly (example shown earlier under "Usage (JavaScript - CJS)"). Typical exports you may use:
-
-- `generateKeyPair()` — generate an RSA key pair
-- `randomKey(length)` and `randomIV()` — convenience key/IV generators
-- `hybridEncrypt(data, config)` — encrypt an object
-- `hybridDecrypt(token, config)` — decrypt a token
-
-Example (CJS quick snippet):
+Server-side Express example (Node):
 
 ```js
-const {
-  generateKeyPair,
-  randomKey,
-  randomIV,
-  hybridEncrypt,
-  hybridDecrypt,
-} = require("joycrypto-hybrid");
+const express = require("express");
+const { hybridDecrypt, generateSodiumKeyPair } = require("joycrypto-hybrid");
 
-const rsa = generateKeyPair();
-const aes = {
-  secretKey: randomKey(32),
-  iv: randomIV(),
-  salt: "mysalt",
-  algorithm: "aes-256-cbc",
-};
+const app = express();
+app.use(express.json());
 
-const token = hybridEncrypt({ hello: "world" }, { aes, rsa });
-const data = hybridDecrypt(token, {
-  aes: { secretKey: "", iv: "", salt: "mysalt", algorithm: "aes-256-cbc" },
-  rsa,
-});
-
-console.log({ token, data });
+(async () => {
+  // Generate or load keypair at startup (persist private key in a secure store for production)
+  const kp = await generateSodiumKeyPair();
+  app.post("/decrypt", async (req, res) => {
+    const { token } = req.body;
+    const cfg = {
+      aes: { algorithm: "aes-256-cbc", salt: "client-salt" },
+      rsa: { publicKey: kp.publicKey, privateKey: kp.privateKey },
+    };
+    const data = await hybridDecrypt(token, cfg);
+    res.json({ data });
+  });
+  app.listen(3000);
+})();
 ```
 
-### Browser / client-side React note
+## API and helpers
 
-This library uses Node's built-in `crypto` module (server-side). While earlier docs mentioned client compatibility, the current implementation relies on Node APIs and is intended to run in Node.js environments (Express, Next.js API routes, server-side code). For browser-based React apps, either:
+Below is a quick reference table for the most-used functions, their main parameters and return values. For all functions that accept an `AESConfig`, see the `Types` section in the source (`src/types.ts`).
 
-- Call a server API (Express/Next.js) that uses this library to perform encryption/decryption, or
-- Use a browser-friendly crypto library (Web Crypto API or a dedicated browser library) if you need client-side cryptography.
+| Function                                                  | Main parameters                                 |                              Returns | Notes / expected input                                                                                                                                                   |
+| --------------------------------------------------------- | ----------------------------------------------- | -----------------------------------: | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------- |
+| aesEncrypt(data, config)                                  | data: object, config: AESConfig                 |         Promise<string> (ciphertext) | `config.secretKey` can be a hex key (raw) or a passphrase (KDF). `config.iv` accepts hex (preferred) or legacy latin1. `config.expiresIn` sets payload expiry (seconds). |
+| aesDecrypt(token, config)                                 | token: string, config: AESConfig                |                       Promise<object | null>                                                                                                                                                                    | Returns decrypted object or null on failure/expired. Provide same config used to encrypt (secretKey, iv, salt, algorithm). |
+| isTokenExpired(token, config)                             | token: string, config: AESConfig                |                      Promise<boolean | null>                                                                                                                                                                    | true = expired, false = valid, null = invalid/unreadable.                                                                  |
+| randomKey(length)                                         | length: number (hex chars)                      |                         string (hex) | Returns random hex string. For AES-256 provide 64 (hex chars) → 32 bytes.                                                                                                |
+| randomIVHex(bytes)                                        | bytes: number                                   |                         string (hex) | Returns hex IV (bytes \* 2 hex chars). Example: randomIVHex(16) → 32 hex chars.                                                                                          |
+| randomIV()                                                | —                                               |                      string (latin1) | Legacy helper: returns 16-char latin1 string (each char = one byte). Kept for backwards compatibility.                                                                   |
+| generateSodiumKeyPair()                                   | —                                               |   Promise<{ publicKey, privateKey }> | Base64-encoded sodium keypair (ready for `sodiumSeal`/`sodiumUnseal`). Works in browser & Node.                                                                          |
+| sodiumSeal(plaintext, publicKey)                          | plaintext: string, publicKey: string (base64)   |             Promise<string> (base64) | Sealed-box encrypts data to recipient public key (no sender key needed).                                                                                                 |
+| sodiumUnseal(cipherB64, publicKey, privateKey)            | cipherB64: string, publicKey/privateKey: base64 |          Promise<string> (plaintext) | Opens sealed box with recipient keypair.                                                                                                                                 |
+| generateRSAKeys(bits?)                                    | bits?: number                                   | { publicKey, privateKey, algorithm } | Legacy Node-only RSA keypair (PEM). Still exported for compatibility.                                                                                                    |
+| rsaEncrypt(data, publicKey) / rsaDecrypt(enc, privateKey) | data/string, PEM keys                           |                      string / string | Legacy RSA helpers (Node-only). Prefer sodium sealed boxes for browser compatibility.                                                                                    |
+| hybridEncrypt(data, config)                               | data: object, config: HybridEncryptConfig       |      Promise<string> (envelope JSON) | Creates an envelope: { encryptedData, encryptedKey } where encryptedKey is sealed with sodium by default.                                                                |
+| hybridDecrypt(token, config)                              | token: string, config: HybridEncryptConfig      |                       Promise<object | null>                                                                                                                                                                    | Decrypts envelope with private key + AES config, returns original object or null.                                          |
 
-If you need help adapting the library for browser usage or adding a browser-friendly build, say so and I can propose changes.
+Examples / input expectations
 
-## Building locally (for contributors)
+- secretKey (hex): For AES-256 pass a 64-char hex string (32 bytes). For AES-192 pass 48 hex chars. For AES-128 pass 32 hex chars.
+- iv (hex): Use `randomIVHex(bytes)` to generate a hex IV. `aesEncrypt`/`aesDecrypt` accept hex IVs or the legacy latin1 string returned by `randomIV()`.
 
-1. Install dev deps:
+If you want a self-contained token format (ciphertext + iv + meta) I can add helper functions to wrap those fields into one compact envelope for easier transport.
+
+## Security notes & recommendations
+
+- Prefer AES-256 and hex-formatted keys/IVs for clarity.
+- Do not store private keys or secrets in client code. Keep private keys in server-side secure storage.
+- Consider migrating symmetric layer to an AEAD (XChaCha20-Poly1305 via libsodium) for authenticated encryption and fewer configuration pitfalls — I can implement this migration if you want.
+
+## Development & tests
 
 ```powershell
 npm install
-```
-
-2. Build (produces `dist/` with CJS/ESM bundles and `.d.ts` files):
-
-```powershell
 npm run build
+npm test
 ```
 
-3. Clean:
+## Contributing
 
-```powershell
-npm run clean
-```
+- Create a branch, open a PR, and include tests for new features. The repository already contains unit tests for AES, RSA (legacy), sodium sealed-box, and hybrid flows.
 
-## Notes
+## Questions / next steps
 
-- The package exports both ESM and CJS entrypoints and provides `dist/index.d.ts` for TypeScript users.
-- CI: Consider adding a GitHub Actions workflow that runs `npm ci && npm run build && npm test` on push.
+- Want me to migrate symmetric encryption to libsodium AEAD (recommended)?
+- Want a small example Next.js repo demonstrating both client and server usage?
 
-## Next steps / Suggestions
-
-- Publish a release and verify install in a downstream JS and TS project.
-- Optionally add a browser-friendly UMD bundle if you target direct <script> usage.
+Open an issue or PR on the repo and I’ll help.
