@@ -1,6 +1,6 @@
 {
   "name": "joycrypto-hybrid",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "A hybrid AES + RSA encryption library for JavaScript and TypeScript (client and server compatible).",
   "repository": {
     "type": "git",

@@ -71,27 +71,41 @@ var aesEncrypt = async (data, config) => {
   const scryptModule = await import("scrypt-js");
   const scrypt = scryptModule.scrypt;
   const enc = new TextEncoder();
-  const pw = enc.encode(secretKey);
-  const saltBuf = enc.encode(salt);
   const keyLen = getKeyLength(algorithm);
-  const derived = await new Promise((resolve, reject) => {
-    try {
-      scrypt(
-        Array.from(pw),
-        Array.from(saltBuf),
-        16384,
-        8,
-        1,
-        keyLen,
-        (error, _progress, key) => {
-          if (error) return reject(error);
-          if (key) return resolve(key);
-        }
-      );
-    } catch (e) {
-      reject(e);
+  const hexRegex = /^[0-9a-fA-F]+$/;
+  let derived;
+  if (hexRegex.test(secretKey) && secretKey.length === keyLen * 2) {
+    const bytes = new Uint8Array(keyLen);
+    for (let i = 0; i < keyLen; i++) {
+      bytes[i] = parseInt(secretKey.substr(i * 2, 2), 16);
     }
-  });
+    derived = bytes;
+  } else {
+    const pw = enc.encode(secretKey);
+    const saltBuf = enc.encode(salt);
+    derived = await new Promise((resolve, reject) => {
+      try {
+        scrypt(
+          Array.from(pw),
+          Array.from(saltBuf),
+          16384,
+          8,
+          1,
+          keyLen,
+          (...cbArgs) => {
+            const candidate = cbArgs[cbArgs.length - 1];
+            if (candidate && (candidate instanceof Uint8Array || Array.isArray(candidate))) {
+              return resolve(new Uint8Array(candidate));
+            }
+            const maybeErr = cbArgs[0];
+            if (maybeErr && maybeErr instanceof Error) return reject(maybeErr);
+          }
+        );
+      } catch (e) {
+        reject(e);
+      }
+    });
+  }
   const subtle = window.crypto && window.crypto.subtle;
   const cryptoKey = await subtle.importKey(
     "raw",
@@ -129,26 +143,41 @@ var aesDecrypt = async (encrypted, config) => {
     const scrypt = scryptModule.scrypt;
     const keyLen = getKeyLength(algorithm);
     const enc = new TextEncoder();
-    const pw = enc.encode(secretKey);
-    const saltBuf = enc.encode(salt);
-    const derived = await new Promise((resolve, reject) => {
-      try {
-        scrypt(
-          Array.from(pw),
-          Array.from(saltBuf),
-          16384,
-          8,
-          1,
-          keyLen,
-          (error, _progress, key) => {
-            if (error) return reject(error);
-            if (key) return resolve(key);
-          }
-        );
-      } catch (e) {
-        reject(e);
+    const hexRegex = /^[0-9a-fA-F]+$/;
+    let derived;
+    if (hexRegex.test(secretKey) && secretKey.length === keyLen * 2) {
+      const bytes = new Uint8Array(keyLen);
+      for (let i = 0; i < keyLen; i++) {
+        bytes[i] = parseInt(secretKey.substr(i * 2, 2), 16);
       }
-    });
+      derived = bytes;
+    } else {
+      const pw = enc.encode(secretKey);
+      const saltBuf = enc.encode(salt);
+      derived = await new Promise((resolve, reject) => {
+        try {
+          scrypt(
+            Array.from(pw),
+            Array.from(saltBuf),
+            16384,
+            8,
+            1,
+            keyLen,
+            (...cbArgs) => {
+              const candidate = cbArgs[cbArgs.length - 1];
+              if (candidate && (candidate instanceof Uint8Array || Array.isArray(candidate))) {
+                return resolve(new Uint8Array(candidate));
+              }
+              const maybeErr = cbArgs[0];
+              if (maybeErr && maybeErr instanceof Error)
+                return reject(maybeErr);
+            }
+          );
+        } catch (e) {
+          reject(e);
+        }
+      });
+    }
     const subtle = window.crypto && window.crypto.subtle;
     const cryptoKey = await subtle.importKey(
       "raw",
