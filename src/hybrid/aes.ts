@@ -86,28 +86,56 @@ export const aesEncrypt = async (
   const scrypt = (scryptModule as any).scrypt;
 
   const enc = new TextEncoder();
-  const pw = enc.encode(secretKey);
-  const saltBuf = enc.encode(salt);
   const keyLen = getKeyLength(algorithm);
 
-  const derived = await new Promise<Uint8Array>((resolve, reject) => {
-    try {
-      scrypt(
-        Array.from(pw),
-        Array.from(saltBuf),
-        16384,
-        8,
-        1,
-        keyLen,
-        (error: any, _progress: any, key: Uint8Array) => {
-          if (error) return reject(error);
-          if (key) return resolve(key);
-        }
-      );
-    } catch (e) {
-      reject(e);
+  // If secretKey looks like a hex string of the correct length, use it directly as the
+  // derived key (hex -> bytes). This allows callers to pass a hex secret directly.
+  const hexRegex = /^[0-9a-fA-F]+$/;
+  let derived: Uint8Array;
+  if (hexRegex.test(secretKey) && secretKey.length === keyLen * 2) {
+    // hex -> bytes
+    const bytes = new Uint8Array(keyLen);
+    for (let i = 0; i < keyLen; i++) {
+      bytes[i] = parseInt(secretKey.substr(i * 2, 2), 16);
     }
-  });
+    derived = bytes;
+  } else {
+    const pw = enc.encode(secretKey);
+    const saltBuf = enc.encode(salt);
+
+    // scrypt-js may call the callback multiple times with progress values before
+    // finally providing the derived key. Different versions use different callback
+    // signatures (progress, key) or (error, progress, key). Treat the last
+    // argument as the candidate key when it's present.
+    derived = await new Promise<Uint8Array>((resolve, reject) => {
+      try {
+        scrypt(
+          Array.from(pw),
+          Array.from(saltBuf),
+          16384,
+          8,
+          1,
+          keyLen,
+          (...cbArgs: any[]) => {
+            // Candidate key may be the last argument
+            const candidate = cbArgs[cbArgs.length - 1];
+            if (
+              candidate &&
+              (candidate instanceof Uint8Array || Array.isArray(candidate))
+            ) {
+              return resolve(new Uint8Array(candidate));
+            }
+            // Some implementations pass (err, progress, key) where err can be null
+            const maybeErr = cbArgs[0];
+            if (maybeErr && maybeErr instanceof Error) return reject(maybeErr);
+            // Otherwise it's a progress callback; ignore
+          }
+        );
+      } catch (e) {
+        reject(e);
+      }
+    });
+  }
 
   // @ts-ignore - derived is a Uint8Array
   const subtle = (window.crypto &&
@@ -159,27 +187,46 @@ export const aesDecrypt = async (
 
     const keyLen = getKeyLength(algorithm);
     const enc = new TextEncoder();
-    const pw = enc.encode(secretKey);
-    const saltBuf = enc.encode(salt);
 
-    const derived = await new Promise<Uint8Array>((resolve, reject) => {
-      try {
-        scrypt(
-          Array.from(pw),
-          Array.from(saltBuf),
-          16384,
-          8,
-          1,
-          keyLen,
-          (error: any, _progress: any, key: Uint8Array) => {
-            if (error) return reject(error);
-            if (key) return resolve(key);
-          }
-        );
-      } catch (e) {
-        reject(e);
+    // Support hex secretKey directly (raw key bytes) if length matches
+    const hexRegex = /^[0-9a-fA-F]+$/;
+    let derived: Uint8Array;
+    if (hexRegex.test(secretKey) && secretKey.length === keyLen * 2) {
+      const bytes = new Uint8Array(keyLen);
+      for (let i = 0; i < keyLen; i++) {
+        bytes[i] = parseInt(secretKey.substr(i * 2, 2), 16);
       }
-    });
+      derived = bytes;
+    } else {
+      const pw = enc.encode(secretKey);
+      const saltBuf = enc.encode(salt);
+      derived = await new Promise<Uint8Array>((resolve, reject) => {
+        try {
+          scrypt(
+            Array.from(pw),
+            Array.from(saltBuf),
+            16384,
+            8,
+            1,
+            keyLen,
+            (...cbArgs: any[]) => {
+              const candidate = cbArgs[cbArgs.length - 1];
+              if (
+                candidate &&
+                (candidate instanceof Uint8Array || Array.isArray(candidate))
+              ) {
+                return resolve(new Uint8Array(candidate));
+              }
+              const maybeErr = cbArgs[0];
+              if (maybeErr && maybeErr instanceof Error)
+                return reject(maybeErr);
+            }
+          );
+        } catch (e) {
+          reject(e);
+        }
+      });
+    }
 
     // @ts-ignore
     const subtle = (window.crypto &&
