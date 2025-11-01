@@ -1,13 +1,13 @@
-# joycrypto-hybrid
+# hcrypto
 
 A hybrid encryption helper focused on providing cross-platform (Node + browser-ready APIs) building blocks for hybrid encryption flows. This project provides AES helpers, sealed-box wrappers (libsodium), key generation utilities, and an easy hybrid envelope pattern.
 
 ## Install
 
 ```powershell
-npm install joycrypto-hybrid
+npm install hcrypto
 # or
-pnpm add joycrypto-hybrid
+pnpm add hcrypto
 ```
 
 ## Quick notes about platform compatibility
@@ -21,12 +21,7 @@ The package includes helpers to generate hex secrets and hex IVs that are easy t
 
 ```tsx
 import React from "react";
-import {
-  aesEncrypt,
-  aesDecrypt,
-  randomKey,
-  randomIVHex,
-} from "joycrypto-hybrid";
+import { aesEncrypt, aesDecrypt, randomKey, randomIVHex } from "hcrypto";
 
 async function demo() {
   // prefer AES-256
@@ -62,7 +57,7 @@ Server code can keep private keys and secrets hidden. Here's a minimal Next.js A
 
 ```js
 // pages/api/decrypt-token.js (Next.js API route)
-import { hybridDecrypt } from "joycrypto-hybrid";
+import { hybridDecrypt } from "hcrypto";
 
 // Keep keys in a secure store in production. For demo we use process.env or in-memory.
 const KEYPAIR = {
@@ -90,7 +85,7 @@ Server-side Express example (Node):
 
 ```js
 const express = require("express");
-const { hybridDecrypt, generateSodiumKeyPair } = require("joycrypto-hybrid");
+const { hybridDecrypt, generateSodiumKeyPair } = require("hcrypto");
 
 const app = express();
 app.use(express.json());
