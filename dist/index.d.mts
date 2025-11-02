@@ -1,4 +1,4 @@
-type AESAlgorithm = "aes-128-cbc" | "aes-192-cbc" | "aes-256-cbc";
+type AESAlgorithm = "aes-128-cbc" | "aes-256-cbc" | "aes-128-gcm" | "aes-256-gcm";
 type RSAAlgorithm = "RSA-SHA256" | "RSA-SHA512";
 type EncodingType = "base64" | "hex" | "utf8";
 interface AESConfig {

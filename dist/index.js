@@ -53,12 +53,15 @@ function getKeyLength(algorithm) {
   switch (algorithm) {
     case "aes-128-cbc":
       return 16;
-    case "aes-192-cbc":
-      return 24;
+    case "aes-128-gcm":
+      return 16;
     case "aes-256-cbc":
     default:
       return 32;
   }
+}
+function isGcm(algorithm) {
+  return /-gcm$/.test(algorithm);
 }
 function hexToUint8Array(hex) {
   const len = hex.length / 2;
@@ -109,8 +112,65 @@ var aesEncrypt = async (data, config) => {
   const json = JSON.stringify(payload);
   if (typeof window === "undefined") {
     if (!salt) throw new Error("Missing salt for key derivation");
+    const crypto2 = nodeCrypto();
+    const key = crypto2.scryptSync(secretKey, salt, getKeyLength(algorithm));
     const isHexIv2 = /^[0-9a-fA-F]+$/.test(iv);
-    if (isHexIv2) {
+    if (isGcm(algorithm)) {
+      if (isHexIv2) {
+        if (iv.length !== 24)
+          throw new Error(
+            "Invalid IV length for GCM: expected 12 bytes (24 hex chars)"
+          );
+      } else {
+        if (iv.length !== 12)
+          throw new Error(
+            "Invalid IV length for GCM: expected 12 bytes (latin1 string length 12)"
+          );
+      }
+    } else {
+      if (isHexIv2) {
+        if (iv.length !== 32)
+          throw new Error(
+            "Invalid IV length: expected 16 bytes (32 hex chars)"
+          );
+      } else {
+        if (iv.length !== 16)
+          throw new Error(
+            "Invalid IV length: expected 16 bytes (latin1 string length 16)"
+          );
+      }
+    }
+    const isHex = /^[0-9a-fA-F]+$/.test(iv);
+    const ivBuf = Buffer.from(iv, isHex ? "hex" : "latin1");
+    const cipher = crypto2.createCipheriv(algorithm, key, ivBuf);
+    const outBuf = Buffer.concat([cipher.update(json, "utf8"), cipher.final()]);
+    if (isGcm(algorithm)) {
+      const tag = cipher.getAuthTag();
+      const combined = Buffer.concat([outBuf, tag]);
+      return combined.toString(encoding);
+    }
+    return outBuf.toString(encoding);
+  }
+  const scryptModule = await import("scrypt-js");
+  const scrypt = scryptModule.scrypt;
+  const enc = new TextEncoder();
+  const keyLen = getKeyLength(algorithm);
+  if (!salt) throw new Error("Missing salt for key derivation");
+  const isHexIv = /^[0-9a-fA-F]+$/.test(iv);
+  if (isGcm(algorithm)) {
+    if (isHexIv) {
+      if (iv.length !== 24)
+        throw new Error(
+          "Invalid IV length for GCM: expected 12 bytes (24 hex chars)"
+        );
+    } else {
+      if (iv.length !== 12)
+        throw new Error(
+          "Invalid IV length for GCM: expected 12 bytes (latin1 string length 12)"
+        );
+    }
+  } else {
+    if (isHexIv) {
       if (iv.length !== 32)
         throw new Error("Invalid IV length: expected 16 bytes (32 hex chars)");
     } else {
@@ -119,28 +179,6 @@ var aesEncrypt = async (data, config) => {
           "Invalid IV length: expected 16 bytes (latin1 string length 16)"
         );
     }
-    const crypto2 = nodeCrypto();
-    const key = crypto2.scryptSync(secretKey, salt, getKeyLength(algorithm));
-    const isHex = /^[0-9a-fA-F]+$/.test(iv);
-    const ivBuf = Buffer.from(iv, isHex ? "hex" : "latin1");
-    const cipher = crypto2.createCipheriv(algorithm, key, ivBuf);
-    const out = cipher.update(json, "utf8", encoding) + cipher.final(encoding);
-    return out;
-  }
-  const scryptModule = await import("scrypt-js");
-  const scrypt = scryptModule.scrypt;
-  const enc = new TextEncoder();
-  const keyLen = getKeyLength(algorithm);
-  if (!salt) throw new Error("Missing salt for key derivation");
-  const isHexIv = /^[0-9a-fA-F]+$/.test(iv);
-  if (isHexIv) {
-    if (iv.length !== 32)
-      throw new Error("Invalid IV length: expected 16 bytes (32 hex chars)");
-  } else {
-    if (iv.length !== 16)
-      throw new Error(
-        "Invalid IV length: expected 16 bytes (latin1 string length 16)"
-      );
   }
   const hexRegex = /^[0-9a-fA-F]+$/;
   let derived;
@@ -177,17 +215,20 @@ var aesEncrypt = async (data, config) => {
     });
   }
   const subtle = window.crypto && window.crypto.subtle;
+  const algName = isGcm(algorithm) ? "AES-GCM" : "AES-CBC";
   const cryptoKey = await subtle.importKey(
     "raw",
     derived,
-    { name: "AES-CBC" },
+    { name: algName },
     false,
     ["encrypt", "decrypt"]
   );
   const ivArr = /^[0-9a-fA-F]+$/.test(iv) ? hexToUint8Array(iv) : latin1ToUint8Array(iv);
   const dataBuf = enc.encode(json);
+  const encryptParams = { name: algName, iv: ivArr };
+  if (isGcm(algorithm)) encryptParams.tagLength = 128;
   const encrypted = await subtle.encrypt(
-    { name: "AES-CBC", iv: ivArr },
+    encryptParams,
     cryptoKey,
     dataBuf
   );
@@ -201,24 +242,54 @@ var aesDecrypt = async (encrypted, config) => {
     if (typeof window === "undefined") {
       if (!salt) throw new Error("Missing salt for key derivation");
       const isHexIv = /^[0-9a-fA-F]+$/.test(iv);
-      if (isHexIv) {
-        if (iv.length !== 32)
-          throw new Error(
-            "Invalid IV length: expected 16 bytes (32 hex chars)"
-          );
+      if (isGcm(algorithm)) {
+        if (isHexIv) {
+          if (iv.length !== 24)
+            throw new Error(
+              "Invalid IV length for GCM: expected 12 bytes (24 hex chars)"
+            );
+        } else {
+          if (iv.length !== 12)
+            throw new Error(
+              "Invalid IV length for GCM: expected 12 bytes (latin1 string length 12)"
+            );
+        }
       } else {
-        if (iv.length !== 16)
-          throw new Error(
-            "Invalid IV length: expected 16 bytes (latin1 string length 16)"
-          );
+        if (isHexIv) {
+          if (iv.length !== 32)
+            throw new Error(
+              "Invalid IV length: expected 16 bytes (32 hex chars)"
+            );
+        } else {
+          if (iv.length !== 16)
+            throw new Error(
+              "Invalid IV length: expected 16 bytes (latin1 string length 16)"
+            );
+        }
       }
       const crypto2 = nodeCrypto();
       const key = crypto2.scryptSync(secretKey, salt, getKeyLength(algorithm));
       const isHex = /^[0-9a-fA-F]+$/.test(iv);
       const ivBuf = Buffer.from(iv, isHex ? "hex" : "latin1");
       const decipher = crypto2.createDecipheriv(algorithm, key, ivBuf);
-      const decrypted = decipher.update(encrypted, encoding, "utf8") + decipher.final("utf8");
-      const parsed2 = JSON.parse(decrypted);
+      let decryptedBuf2;
+      if (isGcm(algorithm)) {
+        const encBuf = Buffer.from(encrypted, encoding);
+        if (encBuf.length < 16) throw new Error("Invalid encrypted data");
+        const tag = encBuf.slice(encBuf.length - 16);
+        const ciphertext = encBuf.slice(0, encBuf.length - 16);
+        decipher.setAuthTag(tag);
+        decryptedBuf2 = Buffer.concat([
+          decipher.update(ciphertext),
+          decipher.final()
+        ]);
+      } else {
+        decryptedBuf2 = Buffer.concat([
+          decipher.update(Buffer.from(encrypted, encoding)),
+          decipher.final()
+        ]);
+      }
+      const parsed2 = JSON.parse(decryptedBuf2.toString("utf8"));
       if (parsed2.exp && Date.now() > parsed2.exp)
         throw new Error("Token expired");
       return parsed2.data;
@@ -229,14 +300,30 @@ var aesDecrypt = async (encrypted, config) => {
     const enc = new TextEncoder();
     if (!salt) throw new Error("Missing salt for key derivation");
     const isHexIv2 = /^[0-9a-fA-F]+$/.test(iv);
-    if (isHexIv2) {
-      if (iv.length !== 32)
-        throw new Error("Invalid IV length: expected 16 bytes (32 hex chars)");
+    if (isGcm(algorithm)) {
+      if (isHexIv2) {
+        if (iv.length !== 24)
+          throw new Error(
+            "Invalid IV length for GCM: expected 12 bytes (24 hex chars)"
+          );
+      } else {
+        if (iv.length !== 12)
+          throw new Error(
+            "Invalid IV length for GCM: expected 12 bytes (latin1 string length 12)"
+          );
+      }
     } else {
-      if (iv.length !== 16)
-        throw new Error(
-          "Invalid IV length: expected 16 bytes (latin1 string length 16)"
-        );
+      if (isHexIv2) {
+        if (iv.length !== 32)
+          throw new Error(
+            "Invalid IV length: expected 16 bytes (32 hex chars)"
+          );
+      } else {
+        if (iv.length !== 16)
+          throw new Error(
+            "Invalid IV length: expected 16 bytes (latin1 string length 16)"
+          );
+      }
     }
     const hexRegex = /^[0-9a-fA-F]+$/;
     let derived;
@@ -274,17 +361,20 @@ var aesDecrypt = async (encrypted, config) => {
       });
     }
     const subtle = window.crypto && window.crypto.subtle;
+    const algName = isGcm(algorithm) ? "AES-GCM" : "AES-CBC";
     const cryptoKey = await subtle.importKey(
       "raw",
       derived,
-      { name: "AES-CBC" },
+      { name: algName },
       false,
       ["encrypt", "decrypt"]
     );
     const ivArr = /^[0-9a-fA-F]+$/.test(iv) ? hexToUint8Array(iv) : latin1ToUint8Array(iv);
     const encryptedBytes = base64ToUint8Array(encrypted);
+    const decryptParams = { name: algName, iv: ivArr };
+    if (isGcm(algorithm)) decryptParams.tagLength = 128;
     const decryptedBuf = await subtle.decrypt(
-      { name: "AES-CBC", iv: ivArr },
+      decryptParams,
       cryptoKey,
       encryptedBytes
     );
@@ -303,7 +393,77 @@ var isTokenExpired = async (token, config) => {
     if (typeof window === "undefined") {
       if (!salt) throw new Error("Missing salt for key derivation");
       const isHexIv = /^[0-9a-fA-F]+$/.test(iv);
-      if (isHexIv) {
+      if (isGcm(algorithm)) {
+        if (isHexIv) {
+          if (iv.length !== 24)
+            throw new Error(
+              "Invalid IV length for GCM: expected 12 bytes (24 hex chars)"
+            );
+        } else {
+          if (iv.length !== 12)
+            throw new Error(
+              "Invalid IV length for GCM: expected 12 bytes (latin1 string length 12)"
+            );
+        }
+      } else {
+        if (isHexIv) {
+          if (iv.length !== 32)
+            throw new Error(
+              "Invalid IV length: expected 16 bytes (32 hex chars)"
+            );
+        } else {
+          if (iv.length !== 16)
+            throw new Error(
+              "Invalid IV length: expected 16 bytes (latin1 string length 16)"
+            );
+        }
+      }
+      const crypto2 = nodeCrypto();
+      const key = crypto2.scryptSync(secretKey, salt, getKeyLength(algorithm));
+      const isHex = /^[0-9a-fA-F]+$/.test(iv);
+      const ivBuf = Buffer.from(iv, isHex ? "hex" : "latin1");
+      const decipher = crypto2.createDecipheriv(algorithm, key, ivBuf);
+      let decryptedBuf2;
+      if (isGcm(algorithm)) {
+        const encBuf = Buffer.from(token, encoding);
+        if (encBuf.length < 16) return null;
+        const tag = encBuf.slice(encBuf.length - 16);
+        const ciphertext = encBuf.slice(0, encBuf.length - 16);
+        decipher.setAuthTag(tag);
+        decryptedBuf2 = Buffer.concat([
+          decipher.update(ciphertext),
+          decipher.final()
+        ]);
+      } else {
+        decryptedBuf2 = Buffer.concat([
+          decipher.update(Buffer.from(token, encoding)),
+          decipher.final()
+        ]);
+      }
+      const parsed2 = JSON.parse(decryptedBuf2.toString("utf8"));
+      if (parsed2.exp && Date.now() > parsed2.exp) return true;
+      return false;
+    }
+    const scryptModule = await import("scrypt-js");
+    const scrypt = scryptModule.scrypt;
+    const keyLen = getKeyLength(algorithm);
+    const enc = new TextEncoder();
+    if (!salt) throw new Error("Missing salt for key derivation");
+    const isHexIv2 = /^[0-9a-fA-F]+$/.test(iv);
+    if (isGcm(algorithm)) {
+      if (isHexIv2) {
+        if (iv.length !== 24)
+          throw new Error(
+            "Invalid IV length for GCM: expected 12 bytes (24 hex chars)"
+          );
+      } else {
+        if (iv.length !== 12)
+          throw new Error(
+            "Invalid IV length for GCM: expected 12 bytes (latin1 string length 12)"
+          );
+      }
+    } else {
+      if (isHexIv2) {
         if (iv.length !== 32)
           throw new Error(
             "Invalid IV length: expected 16 bytes (32 hex chars)"
@@ -314,30 +474,6 @@ var isTokenExpired = async (token, config) => {
             "Invalid IV length: expected 16 bytes (latin1 string length 16)"
           );
       }
-      const crypto2 = nodeCrypto();
-      const key = crypto2.scryptSync(secretKey, salt, getKeyLength(algorithm));
-      const isHex = /^[0-9a-fA-F]+$/.test(iv);
-      const ivBuf = Buffer.from(iv, isHex ? "hex" : "latin1");
-      const decipher = crypto2.createDecipheriv(algorithm, key, ivBuf);
-      const decrypted = decipher.update(token, encoding, "utf8") + decipher.final("utf8");
-      const parsed2 = JSON.parse(decrypted);
-      if (parsed2.exp && Date.now() > parsed2.exp) return true;
-      return false;
-    }
-    const scryptModule = await import("scrypt-js");
-    const scrypt = scryptModule.scrypt;
-    const keyLen = getKeyLength(algorithm);
-    const enc = new TextEncoder();
-    if (!salt) throw new Error("Missing salt for key derivation");
-    const isHexIv2 = /^[0-9a-fA-F]+$/.test(iv);
-    if (isHexIv2) {
-      if (iv.length !== 32)
-        throw new Error("Invalid IV length: expected 16 bytes (32 hex chars)");
-    } else {
-      if (iv.length !== 16)
-        throw new Error(
-          "Invalid IV length: expected 16 bytes (latin1 string length 16)"
-        );
     }
     const hexRegex = /^[0-9a-fA-F]+$/;
     let derived;
@@ -375,17 +511,20 @@ var isTokenExpired = async (token, config) => {
       });
     }
     const subtle = window.crypto && window.crypto.subtle;
+    const algName = isGcm(algorithm) ? "AES-GCM" : "AES-CBC";
     const cryptoKey = await subtle.importKey(
       "raw",
       derived,
-      { name: "AES-CBC" },
+      { name: algName },
       false,
       ["encrypt", "decrypt"]
     );
     const ivArr = /^[0-9a-fA-F]+$/.test(iv) ? hexToUint8Array(iv) : latin1ToUint8Array(iv);
     const encryptedBytes = base64ToUint8Array(token);
+    const decryptParams = { name: algName, iv: ivArr };
+    if (isGcm(algorithm)) decryptParams.tagLength = 128;
     const decryptedBuf = await subtle.decrypt(
-      { name: "AES-CBC", iv: ivArr },
+      decryptParams,
       cryptoKey,
       encryptedBytes
     );
